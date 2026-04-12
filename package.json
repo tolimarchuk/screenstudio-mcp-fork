@@ -1,0 +1,23 @@
+{
+  "name": "screenstudio-cli",
+  "version": "0.1.0",
+  "description": "CLI tool to control Screen Studio via Chrome DevTools Protocol",
+  "type": "module",
+  "bin": {
+    "screenstudio": "./bin/screenstudio.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "engines": {
+    "node": ">=21.0.0"
+  },
+  "dependencies": {
+    "commander": "^13.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

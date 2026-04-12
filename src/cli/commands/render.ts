@@ -26,6 +26,9 @@ export const renderCommand = new Command("render")
   .option("--from <ms>", "Start time in source ms")
   .option("--to <ms>", "End time in source ms")
   .option("-o, --output <dir>", "Output directory", "/tmp/screenstudio-render")
+  .option("--sheet", "Output a single contact sheet image instead of individual frames")
+  .option("--cols <n>", "Columns in contact sheet", "6")
+  .option("--thumb <px>", "Thumbnail width in contact sheet", "400")
   .action(async (opts, cmd) => {
     const port = parseInt(cmd.parent?.opts().port || "9222");
     const json = cmd.parent?.opts().json || false;
@@ -252,6 +255,28 @@ export const renderCommand = new Command("render")
       totalFrames += segFrames;
     }
 
+    // Generate contact sheet if --sheet is specified
+    if (opts.sheet && totalFrames > 0) {
+      const cols = parseInt(opts.cols);
+      const thumbWidth = parseInt(opts.thumb);
+      const rows = Math.ceil(totalFrames / cols);
+      const sheetPath = `${outputDir}/contact_sheet.jpg`;
+
+      try {
+        // Scale frames down and tile into a grid
+        const framePattern = `${outputDir}/frame_%04d.jpg`;
+        execSync(
+          `ffmpeg -framerate 1 -i "${framePattern}" -vf "scale=${thumbWidth}:-1,tile=${cols}x${rows}:margin=4:padding=4:color=0x1a1a1a" -q:v 2 "${sheetPath}" -y 2>/dev/null`,
+        );
+
+        console.log();
+        console.log(`Contact sheet: ${sheetPath}`);
+        console.log(`  ${totalFrames} frames in ${cols}x${rows} grid, ${thumbWidth}px per frame`);
+      } catch {
+        console.error("Warning: failed to create contact sheet");
+      }
+    }
+
     const result = {
       outputDir,
       totalFrames,
@@ -261,14 +286,17 @@ export const renderCommand = new Command("render")
       fromMs,
       toMs,
       segments: segments.length,
+      ...(opts.sheet ? { contactSheet: `${outputDir}/contact_sheet.jpg` } : {}),
     };
 
     if (json) {
       output(result, true);
     } else {
-      console.log();
-      console.log(
-        `Done. Rendered ~${totalFrames} frames to ${outputDir}/`,
-      );
+      if (!opts.sheet) {
+        console.log();
+        console.log(
+          `Done. Rendered ~${totalFrames} frames to ${outputDir}/`,
+        );
+      }
     }
   });

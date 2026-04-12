@@ -78,11 +78,17 @@ export const renderCommand = new Command("render")
       `);
     });
 
-    const videoPath = `${info.recordingPath}/channel-1-display-0.mp4`;
-    if (!existsSync(videoPath)) {
-      console.error(`Recording video not found: ${videoPath}`);
+    // Find the video file — channel number varies per recording
+    const { readdirSync } = await import("fs");
+    const recordingFiles = readdirSync(info.recordingPath);
+    const videoFile = recordingFiles.find(
+      (f: string) => /^channel-\d+-display-\d+\.mp4$/.test(f),
+    );
+    if (!videoFile) {
+      console.error(`No video file found in: ${info.recordingPath}`);
       process.exit(1);
     }
+    const videoPath = `${info.recordingPath}/${videoFile}`;
 
     // Get actual video dimensions via ffprobe
     const probeOutput = execSync(

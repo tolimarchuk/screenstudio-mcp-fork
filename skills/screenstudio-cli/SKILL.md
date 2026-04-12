@@ -21,6 +21,8 @@ Verify with `screenstudio status`.
 
 ## Editing Method: Watch → Edit → Watch
 
+**Before editing, read `references/demo.md`** if the recording has a terminal and browser side by side. It covers the 2x zoom grid system, story-following subagent methodology, and common framing mistakes. Skipping it leads to wrong zoom levels (1.5x instead of 2x), wrong y positions (0.5 instead of 1 for terminal content), and gaps between zooms.
+
 Every edit follows the same loop: **watch the section first, make the change, then watch it again to confirm it worked.** Don't edit blind — you need visual context before and after every mutation.
 
 1. **Watch** — Render or preview the time range you're about to edit. Use `screenstudio render --from <start> --to <end> --fps 10` to extract frames with zoom crop applied, or `screenstudio preview --at <ms>` for a quick single-frame check. Look at the frames to understand what's currently happening in that section.
@@ -319,4 +321,4 @@ All commands support:
 
 ## References
 
-- **[references/demo.md](references/demo.md)** — End-to-end guide for recording and editing a terminal + browser demo. Covers display detection, zoom positions for side-by-side layouts, speed changes, and common issues. Read this when recording a demo with Chrome and a terminal visible.
+- **[references/demo.md](references/demo.md)** — **Read this BEFORE editing any recording with a terminal and browser.** Covers the 2x zoom grid system (x=0/1 for left/right, y=0/0.5/1 for top/middle/bottom), how to spawn a story-following subagent for frame analysis, display detection with `--app`, speed changes, and common framing mistakes. Without this, you will use the wrong zoom level and wrong y positions.

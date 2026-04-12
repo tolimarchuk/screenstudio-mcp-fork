@@ -6,10 +6,33 @@
   "bin": {
     "screenstudio": "./bin/screenstudio.js"
   },
+  "files": [
+    "bin/",
+    "dist/",
+    "skills/",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShawnPana/screenstudio-cli.git"
+  },
+  "keywords": [
+    "screen-studio",
+    "screenstudio",
+    "cli",
+    "video-editing",
+    "screen-recording",
+    "cdp",
+    "chrome-devtools-protocol",
+    "automation"
+  ],
+  "author": "Shawn Pana",
+  "license": "MIT",
   "engines": {
     "node": ">=21.0.0"
   },

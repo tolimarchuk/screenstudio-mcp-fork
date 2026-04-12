@@ -47,7 +47,7 @@ screenstudio record stop                    # saves and dismisses picker overlay
 
 ```bash
 # Find the latest project
-ls -lt "/Users/shawnpana/Screen Studio Projects/" | head -3
+ls -lt ~/Screen\ Studio\ Projects/ | head -3
 
 # Open it
 open "/path/to/project.screenstudio"

@@ -27,11 +27,17 @@ All mutations push to Screen Studio's undo history, so every change is reversibl
 ## Install
 
 ```bash
+npm install -g screenstudio-cli
+```
+
+Or from source:
+
+```bash
 git clone https://github.com/ShawnPana/screenstudio-cli.git
 cd screenstudio-cli
 npm install
 npm run build
-npm link    # makes `screenstudio` available globally
+npm link
 ```
 
 ## Quick Start

@@ -69,7 +69,7 @@ screenstudio analyze --interval 1.5 -o /tmp/demo-frames/
 Or for more precise analysis, extract with ffmpeg:
 
 ```bash
-ffmpeg -i "<recording>/channel-1-display-0.mp4" -vf "fps=1/1.5,scale=960:-1" -q:v 2 /tmp/frames/frame_%03d.jpg -y
+ffmpeg -i "<recording>/channel-*-display-*.mp4" -vf "fps=1/1.5,scale=960:-1" -q:v 2 /tmp/frames/frame_%03d.jpg -y
 ```
 
 Have the subagent read ALL frames and **follow the story**. The subagent should act like a viewer watching the video — tracking the narrative, understanding what content the viewer should be looking at, and flagging when the zoom is showing the wrong thing. The prompt should instruct the subagent to:

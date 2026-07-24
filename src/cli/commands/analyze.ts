@@ -1,3 +1,4 @@
+import { shq } from "../../util/shell.js";
 import { Command } from "commander";
 import { execSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync } from "fs";
@@ -60,7 +61,7 @@ export const analyzeCommand = new Command("analyze")
 
     const ffmpegArgs = [
       "-i",
-      `"${videoPath}"`,
+      `${shq(videoPath)}`,
       "-ss",
       String(fromSec),
       "-to",
@@ -69,7 +70,7 @@ export const analyzeCommand = new Command("analyze")
       `fps=1/${interval},scale=640:-1`,
       "-q:v",
       "3",
-      `"${outputDir}/frame_%03d.jpg"`,
+      `${shq(`${outputDir}/frame_%03d.jpg`)}`,
       "-y",
     ];
 

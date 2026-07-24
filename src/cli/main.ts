@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { launchCommand } from "./commands/launch.js";
+import { quitCommand } from "./commands/quit.js";
 import { statusCommand } from "./commands/status.js";
 import { execCommand } from "./commands/exec.js";
 import { stateCommand } from "./commands/state.js";
@@ -22,6 +23,7 @@ const program = new Command("screenstudio")
   .option("--port <port>", "CDP port", "9222");
 
 program.addCommand(launchCommand);
+program.addCommand(quitCommand);
 program.addCommand(statusCommand);
 program.addCommand(execCommand);
 program.addCommand(stateCommand);

@@ -1,3 +1,4 @@
+import { shq } from "../../util/shell.js";
 import { Command } from "commander";
 import { writeFileSync } from "fs";
 import { withClient } from "../../cdp/client.js";
@@ -148,6 +149,6 @@ export const previewCommand = new Command("preview")
 
     if (opts.open) {
       const { execSync } = await import("child_process");
-      execSync(`open "${opts.output}"`);
+      execSync(`open ${shq(opts.output)}`);
     }
   });

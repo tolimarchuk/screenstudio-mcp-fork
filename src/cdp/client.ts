@@ -100,6 +100,61 @@ export class CDPClient {
     });
   }
 
+  /**
+   * Evaluate an expression that returns a Promise, and wait for it to settle.
+   *
+   * Screen Studio's tRPC bridge (`bridge.client.mutation(...)`) is async. The
+   * plain `evaluate()` above wraps the expression in a synchronous IIFE, so a
+   * promise result is discarded and the caller cannot tell success from
+   * failure. This uses CDP's `awaitPromise` so rejections surface as errors
+   * instead of being silently swallowed.
+   */
+  async evaluateAwait<T = unknown>(expression: string): Promise<T> {
+    if (!this.ws) throw new Error("Not connected. Call connect() first.");
+
+    const id = ++this.messageId;
+    const ws = this.ws;
+
+    return new Promise<T>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("CDP evaluation timed out after 30 seconds."));
+      }, 30_000);
+
+      const handler = (event: MessageEvent) => {
+        const msg = JSON.parse(
+          typeof event.data === "string" ? event.data : event.data.toString(),
+        );
+        if (msg.id !== id) return;
+
+        clearTimeout(timeout);
+        ws.removeEventListener("message", handler);
+
+        if (msg.result?.exceptionDetails) {
+          const d = msg.result.exceptionDetails;
+          const desc =
+            d.exception?.description || d.exception?.value?.message || d.text;
+          reject(new Error(`Screen Studio rejected the call: ${desc}`));
+          return;
+        }
+
+        resolve(msg.result?.result?.value as T);
+      };
+
+      ws.addEventListener("message", handler);
+      ws.send(
+        JSON.stringify({
+          id,
+          method: "Runtime.evaluate",
+          params: {
+            expression,
+            returnByValue: true,
+            awaitPromise: true,
+          },
+        }),
+      );
+    });
+  }
+
   async evaluateRaw(expression: string): Promise<string> {
     if (!this.ws) throw new Error("Not connected. Call connect() first.");
 

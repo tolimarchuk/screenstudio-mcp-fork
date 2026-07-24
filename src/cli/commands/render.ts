@@ -1,3 +1,4 @@
+import { shq } from "../../util/shell.js";
 import { Command } from "commander";
 import { execSync } from "child_process";
 import { existsSync, mkdirSync } from "fs";
@@ -92,7 +93,7 @@ export const renderCommand = new Command("render")
 
     // Get actual video dimensions via ffprobe
     const probeOutput = execSync(
-      `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${videoPath}"`,
+      `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 ${shq(videoPath)}`,
     )
       .toString()
       .trim();
@@ -228,14 +229,14 @@ export const renderCommand = new Command("render")
         "-to",
         String(toSec),
         "-i",
-        `"${videoPath}"`,
+        `${shq(videoPath)}`,
         "-vf",
         `${cropFilter},fps=${fps}`,
         "-q:v",
         "3",
         "-start_number",
         String(startIdx),
-        `"${outputDir}/frame_%04d.jpg"`,
+        `${shq(`${outputDir}/frame_%04d.jpg`)}`,
         "-y",
       ];
 

@@ -200,3 +200,40 @@ The `skills/screenstudio-cli/references/demo.md` guide covers end-to-end demo re
 ## License
 
 MIT
+
+---
+
+## Sam's fork (branch `sam-fork`)
+
+Forked 2026-07-24 from upstream `f34aacc`. Verified against Screen Studio
+3.7.3-4475 on macOS 26.5.1. Installed via symlink at `~/.local/bin/screenstudio`
+— NOT from npm. Edit `src/`, run `npx tsc`, done.
+
+Upstream's recording commands fire their tRPC mutation and print success
+unconditionally, so a failed stop still reported "Recording stopped and saved".
+Changes here:
+
+- **`quit`** (new) — quits Screen Studio and confirms the debug port is closed.
+  Upstream can only open the port, never close it. Exits non-zero if it is still
+  open. `--force` escalates to `pkill`.
+- **`record stop`** — awaits the mutation, then waits for the `.screenstudio`
+  bundle to appear on disk and stop growing. Returns the real `project` path and
+  `capturedSeconds`; exits non-zero if nothing saved. `--no-verify` opts out.
+- **`record start --wait`** — returns only once capture is actually rolling.
+  Upstream returns ~4s early, so `sleep 10` between start and stop captured only
+  ~6s. With `--wait`, a 10s ask captures 9.97s.
+- **`record pause` / `resume` / `cancel`** — surface real errors.
+- **`CDPClient.evaluateAwait()`** — evaluates with CDP `awaitPromise`, so bridge
+  rejections propagate instead of being swallowed.
+- **Shell quoting** (`src/util/shell.ts`) — every interpolated path passed to
+  ffmpeg/ffprobe/open is single-quoted. Upstream used double quotes, which still
+  let `$(...)` execute.
+
+### Security
+
+The debug port is bound to localhost and Screen Studio's renderer has Node
+integration disabled (verified: `require`, `process`, `module` are all
+undefined), so reaching the port is not a shell. But the `electronTRPC` preload
+bridge to the privileged main process is reachable, which means any local
+process can drive the app — including starting a recording — for as long as the
+port is open. Always finish with `screenstudio quit`.

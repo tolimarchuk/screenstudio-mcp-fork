@@ -2,6 +2,65 @@ import { Command } from "commander";
 import { execSync } from "child_process";
 import { withClient } from "../../cdp/client.js";
 import { output, table } from "../format.js";
+import { shq } from "../../util/shell.js";
+import {
+  capturedSeconds,
+  projectPathSet,
+  waitForNewProject,
+} from "../../util/projects.js";
+
+/**
+ * Block until capture is actually rolling, so `record start --wait` returns at
+ * the moment frames begin rather than ~4s early.
+ *
+ * Screen Studio exposes no "am I recording" query on its tRPC bridge — every
+ * plausible procedure name (capture.state, capture.status, capture.isRecording,
+ * ...) returns "No query-procedure on path". So the signal is indirect: the
+ * picker spawns extra CDP pages, and the page count settles once the picker has
+ * closed and the countdown has run.
+ *
+ * Measured on 3.7.3 / single display: the count settles ~2.5s after the click,
+ * and the first frame lands ~1.6s after that — hence the default --countdown of
+ * 1600ms. Verified end to end: asking for 10s yields 9.97s captured. Waiting for
+ * stability rather than a fixed page count is what makes this survive a
+ * different number of displays.
+ */
+async function waitForCaptureStart(
+  port: number,
+  countdownMs: number,
+  timeoutMs = 20_000,
+): Promise<number> {
+  const started = Date.now();
+  const STABLE_SAMPLES = 4; // 4 × 250ms = 1s unchanged
+  let lastCount = -1;
+  let stable = 0;
+
+  while (Date.now() - started < timeoutMs) {
+    let count = -1;
+    try {
+      const res = await fetch(`http://localhost:${port}/json`);
+      const pages: Array<{ url: string }> = await res.json();
+      count = pages.length;
+    } catch {
+      // Port hiccup — treat as unchanged rather than declaring failure.
+      count = lastCount;
+    }
+
+    // Do not count the very first sample as stable: the picker overlays are
+    // still up at that point and would otherwise look like a settled state.
+    if (count === lastCount && lastCount !== -1) {
+      stable++;
+      if (stable >= STABLE_SAMPLES && Date.now() - started > 2000) break;
+    } else {
+      stable = 0;
+    }
+    lastCount = count;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+
+  if (countdownMs > 0) await new Promise((r) => setTimeout(r, countdownMs));
+  return Date.now() - started;
+}
 
 // Find the record function from the React fiber tree and cache it
 const CACHE_RECORD_FNS = `
@@ -59,7 +118,7 @@ function getWindowList(): WindowInfo[] {
       end tell
       return output
     `;
-    const raw = execSync(`osascript -e '${script.replace(/'/g, "'\\''")}'`, {
+    const raw = execSync(`osascript -e ${shq(script)}`, {
       encoding: "utf-8",
       timeout: 5000,
     }).trim();
@@ -472,6 +531,8 @@ const recordStart = new Command("start")
   .option("--title <search>", "Window title to search for (window mode)")
   .option("--app <name>", "Auto-detect display containing this app (display mode)")
   .option("--delay <ms>", "Delay before auto-selecting (ms)", "1500")
+  .option("--wait", "Return only once capture is actually rolling (past the countdown)")
+  .option("--countdown <ms>", "Extra settle after the picker closes, used with --wait", "1600")
   .action(async (opts, cmd) => {
     const port = parseInt(cmd.parent?.parent?.opts().port || "9222");
     const json = cmd.parent?.parent?.opts().json || false;
@@ -563,6 +624,9 @@ const recordStart = new Command("start")
 
       // Wait for recording to actually start
       await new Promise((r) => setTimeout(r, 500));
+      const leadInMs = opts.wait
+        ? await waitForCaptureStart(port, parseInt(opts.countdown))
+        : undefined;
 
       output(
         {
@@ -571,7 +635,8 @@ const recordStart = new Command("start")
           app: match.window.app,
           title: match.window.title,
           size: `${match.window.width}×${match.window.height}`,
-          message: "Recording started",
+          leadInMs,
+          message: opts.wait ? "Recording — capture is rolling" : "Recording started",
         },
         json,
       );
@@ -798,12 +863,17 @@ const recordStart = new Command("start")
         return;
       }
 
+      const leadInMs = opts.wait
+        ? await waitForCaptureStart(port, parseInt(opts.countdown))
+        : undefined;
+
       output(
         {
           success: true,
           mode: "display",
           display: `${target.name} (${target.dim})`,
-          message: "Recording started",
+          leadInMs,
+          message: opts.wait ? "Recording — capture is rolling" : "Recording started",
         },
         json,
       );
@@ -879,12 +949,17 @@ const recordStart = new Command("start")
         return;
       }
 
+      const leadInMs = opts.wait
+        ? await waitForCaptureStart(port, parseInt(opts.countdown))
+        : undefined;
+
       output(
         {
           success: true,
           mode,
           target: clickedName,
-          message: "Recording started",
+          leadInMs,
+          message: opts.wait ? "Recording — capture is rolling" : "Recording started",
         },
         json,
       );
@@ -893,22 +968,62 @@ const recordStart = new Command("start")
 
 const recordStop = new Command("stop")
   .description("Stop recording and save the project")
-  .action(async (_opts, cmd) => {
+  .option("--no-verify", "Do not wait for the saved project to appear on disk")
+  .option("--timeout <ms>", "How long to wait for the save to complete", "120000")
+  .action(async (opts, cmd) => {
     const port = parseInt(cmd.parent?.parent?.opts().port || "9222");
     const json = cmd.parent?.parent?.opts().json || false;
 
-    await withClient(port, async (client) => {
-      return client.evaluate(`
-        bridge.client.mutation("capture.finish").then(function() {}).catch(function() {});
-      `);
-    });
+    // Snapshot before stopping so we can tell which bundle is the new one.
+    const before = projectPathSet();
 
-    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      await withClient(port, async (client) => {
+        return client.evaluateAwait(`bridge.client.mutation("capture.finish")`);
+      });
+    } catch (err) {
+      output(
+        {
+          success: false,
+          error: `Screen Studio refused to stop the recording: ${(err as Error).message}`,
+        },
+        json,
+      );
+      process.exit(1);
+    }
 
     // Dismiss the picker overlay that reappears after stop
+    await new Promise((r) => setTimeout(r, 1500));
     await dismissPicker(port);
 
-    output({ success: true, message: "Recording stopped and saved" }, json);
+    if (opts.verify === false) {
+      output({ success: true, message: "Recording stopped (not verified)" }, json);
+      return;
+    }
+
+    const saved = await waitForNewProject(before, parseInt(opts.timeout));
+    if (!saved) {
+      output(
+        {
+          success: false,
+          error:
+            "Stop was accepted but no new project appeared on disk. " +
+            "Check Screen Studio — the recording may still be processing, or the save location may be outside the home folder (set SCREENSTUDIO_PROJECTS_DIR).",
+        },
+        json,
+      );
+      process.exit(1);
+    }
+
+    output(
+      {
+        success: true,
+        message: "Recording stopped and saved",
+        project: saved,
+        capturedSeconds: capturedSeconds(saved),
+      },
+      json,
+    );
   });
 
 const recordCancel = new Command("cancel")
@@ -917,11 +1032,17 @@ const recordCancel = new Command("cancel")
     const port = parseInt(cmd.parent?.parent?.opts().port || "9222");
     const json = cmd.parent?.parent?.opts().json || false;
 
-    await withClient(port, async (client) => {
-      return client.evaluate(`
-        bridge.client.mutation("capture.cancel").then(function() {}).catch(function() {});
-      `);
-    });
+    try {
+      await withClient(port, async (client) => {
+        return client.evaluateAwait(`bridge.client.mutation("capture.cancel")`);
+      });
+    } catch (err) {
+      output(
+        { success: false, error: `Cancel failed: ${(err as Error).message}` },
+        json,
+      );
+      process.exit(1);
+    }
 
     await new Promise((r) => setTimeout(r, 500));
 
@@ -939,11 +1060,17 @@ const recordPause = new Command("pause")
     const port = parseInt(cmd.parent?.parent?.opts().port || "9222");
     const json = cmd.parent?.parent?.opts().json || false;
 
-    await withClient(port, async (client) => {
-      return client.evaluate(`
-        bridge.client.mutation("capture.pause").then(function() {}).catch(function() {});
-      `);
-    });
+    try {
+      await withClient(port, async (client) => {
+        return client.evaluateAwait(`bridge.client.mutation("capture.pause")`);
+      });
+    } catch (err) {
+      output(
+        { success: false, error: `Pause failed: ${(err as Error).message}` },
+        json,
+      );
+      process.exit(1);
+    }
 
     await new Promise((r) => setTimeout(r, 500));
 
@@ -956,11 +1083,17 @@ const recordResume = new Command("resume")
     const port = parseInt(cmd.parent?.parent?.opts().port || "9222");
     const json = cmd.parent?.parent?.opts().json || false;
 
-    await withClient(port, async (client) => {
-      return client.evaluate(`
-        bridge.client.mutation("capture.resume").then(function() {}).catch(function() {});
-      `);
-    });
+    try {
+      await withClient(port, async (client) => {
+        return client.evaluateAwait(`bridge.client.mutation("capture.resume")`);
+      });
+    } catch (err) {
+      output(
+        { success: false, error: `Resume failed: ${(err as Error).message}` },
+        json,
+      );
+      process.exit(1);
+    }
 
     await new Promise((r) => setTimeout(r, 500));
 

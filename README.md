@@ -1,96 +1,130 @@
-# screenstudio-cli
+# screenstudio-agent
 
-Control [Screen Studio](https://www.screen.studio/) from the command line. No plugins, no extensions — direct WebSocket connection to the Electron app's MobX state via Chrome DevTools Protocol.
+Drive [Screen Studio](https://www.screen.studio/) from the command line, so an AI agent can record and edit your screen without you at the keyboard.
 
-Record, edit, and export Screen Studio projects entirely from the terminal. Built for AI agents (Claude Code, Codex, etc.) to automate screen recording workflows end-to-end.
+A fork of [ShawnPana/screenstudio-cli](https://github.com/ShawnPana/screenstudio-cli), rebuilt around one requirement: **an agent has to be able to tell whether the recording actually worked.**
 
-## How It Works
+繁體中文版：[README.zh-TW.md](README.zh-TW.md)
 
-Screen Studio is an Electron app. Launching it with `--remote-debugging-port=9222` exposes Chrome DevTools Protocol, giving direct access to its React/MobX internals. This CLI connects via WebSocket and can:
+---
 
-- Read full project state (slices, zooms, config, recording metadata)
-- Mutate the timeline (split, trim, remove, speed up, merge)
-- Control zoom ranges (add, remove, split, update position/level)
-- Manage masks for blurring sensitive content
-- Start/stop/pause recordings programmatically
-- Seek, preview, and render frames for verification
-- Export the final video
+## Why this fork exists
 
-All mutations push to Screen Studio's undo history, so every change is reversible with `screenstudio project undo`.
+I make a lot of screen recordings — product walkthroughs, workshop material, demo footage for client videos. The recording itself is the boring part. Arrange the windows, hit record, talk, stop, wait, find the file.
+
+That is work an agent should do. Screen Studio has no automation surface of its own — no AppleScript, no URL scheme, no CLI — so Shawn Pana's project, which drives it over the Chrome DevTools Protocol, was the way in.
+
+It worked. But it was built for a person watching the screen, and an agent is not watching the screen.
+
+## What changed, and why
+
+Upstream sends each recording command to the app, throws the reply away, and prints success:
+
+```js
+bridge.client.mutation("capture.finish").then(function() {}).catch(function() {});
+// ...then, unconditionally:
+output({ success: true, message: "Recording stopped and saved" });
+```
+
+That empty `.catch()` swallows every error. A failed stop still reported "Recording stopped and saved". If you are sitting there, you notice. If an agent is running unattended, it reports a finished video that does not exist.
+
+| | Upstream | Here |
+|---|---|---|
+| `record stop` | Always prints success | Waits for the app's real reply, then waits for the `.screenstudio` bundle to appear on disk and stop growing. Returns the file path and captured duration. Exits non-zero if nothing saved. |
+| `record start` | Returns ~4.2s before the first frame, so `sleep 10` between start and stop captured ~6s of footage | `--wait` returns only once capture is rolling. A 10s ask captures 9.97s. |
+| `record pause` / `resume` / `cancel` | Always print success | Surface real failures |
+| Closing the debug port | No way to. `launch` opens it; nothing closes it | `quit` closes the app and verifies the port is shut |
+| Shell arguments | Double-quoted, so `$(...)` in a filename executes | Single-quoted |
+
+### Verifying by outcome, not by asking
+
+Screen Studio has no "am I recording?" query. Every plausible name comes back empty:
+
+```
+capture.state · capture.status · capture.getState · capture.isRecording
+capture.info  · capture.current · capture.get     · recording.state
+→ "No query-procedure on path"
+```
+
+So `record stop` does not ask the app whether it worked. It watches for the artifact the app is supposed to produce — the project bundle appearing on disk and settling — and reports that. Slower, but it cannot lie, and it does not break when the next release renames its internals.
+
+```json
+{
+  "success": true,
+  "project": "/Users/you/Screen Studio Projects/Built-in Retina Display ....screenstudio",
+  "capturedSeconds": 9.97
+}
+```
 
 ## Requirements
 
-- **Node.js** >= 21 (for built-in WebSocket)
-- **Screen Studio** (macOS)
-- **ffmpeg** (for `render` and `analyze` commands) — `brew install ffmpeg`
+- macOS
+- Screen Studio — verified against **3.7.3-4475** on macOS 26.5.1
+- Node.js 21 or later, for the built-in WebSocket
+- ffmpeg and ffprobe, for `render` and `analyze` — `brew install ffmpeg`
+- Accessibility permission for your terminal, so window and display detection can read the screen
 
 ## Install
 
 ```bash
-npm install -g screenstudio-cli
-```
-
-Or from source:
-
-```bash
-git clone https://github.com/ShawnPana/screenstudio-cli.git
-cd screenstudio-cli
+git clone https://github.com/HyperfocuSam/screenstudio-agent.git
+cd screenstudio-agent
 npm install
-npm run build
-npm link
+npx tsc
+ln -s "$PWD/bin/screenstudio.js" ~/.local/bin/screenstudio   # or anywhere on your PATH
 ```
 
-## Quick Start
+Not published to npm. Clone it, read it, build it — you should own the code that drives an app which can record your screen.
+
+## Quick start
 
 ```bash
-# Launch Screen Studio with CDP enabled
-screenstudio launch
-
-# Open a project
-open ~/Screen\ Studio\ Projects/MyRecording.screenstudio
-
-# Check connection
-screenstudio status
-# → Connected to Screen Studio 3.6.0 | Project: MyRecording | Duration: 29.3s | 5 slices
-
-# Read project state
-screenstudio state
-screenstudio state --json    # full structured dump
-
-# Edit the timeline
-screenstudio slice list
-screenstudio slice split 15000           # split at 15s
-screenstudio slice speed 0 2             # 2x speed on slice 0
-screenstudio slice remove --from 6000 --to 8000   # cut a section
-
-# Add a zoom
-screenstudio zoom add 0 --end 30000 --level 2 --x 0.5 --y 0.5 --id my_zoom
-
-# Preview
-screenstudio preview --at 5000 -o /tmp/check.png --open
-
-# Export
-screenstudio export
+screenstudio launch                              # opens Screen Studio with the debug port on
+screenstudio record displays                     # what can I record?
+screenstudio record start --display 0 --wait     # returns when capture is actually rolling
+sleep 30
+screenstudio record stop                         # returns the saved project path
+screenstudio quit                                # closes the app AND the port
 ```
+
+## Security
+
+This works by launching Screen Studio with `--remote-debugging-port=9222`. Know what that means before you use it.
+
+**Verified on 3.7.3-4475:**
+
+- The port binds to `127.0.0.1` only. Nothing on your network can reach it.
+- Screen Studio's window has Node integration disabled — `require`, `process`, `module` and `__dirname` are all undefined. Reaching the port does not give anyone a shell.
+- But the `electronTRPC` preload bridge to the app's privileged main process is reachable. Any local process can drive Screen Studio while the port is open, including starting a recording.
+
+So: **always finish with `screenstudio quit`.** It exits non-zero if the port is still open, so a script can depend on it. Open the port for the job, not for the day.
+
+Nothing here phones home. One runtime dependency (`commander`), no install scripts, and every network call goes to localhost.
+
+---
 
 ## Commands
 
 ### Recording
 
 ```bash
-screenstudio record displays                                 # list displays with visible apps
-screenstudio record windows                                  # list windows with titles
+screenstudio record displays                                  # list displays with visible apps
+screenstudio record windows                                   # list windows with titles
+screenstudio record start --display 0 --wait                  # record a display, wait for capture
 screenstudio record start --app Terminal                      # record display containing app
 screenstudio record start --mode window --title "YouTube"     # record specific window by title
-screenstudio record pause                                    # pause recording
-screenstudio record resume                                   # resume
-screenstudio record stop                                     # stop and save
-screenstudio record cancel                                   # stop and discard
+screenstudio record pause                                     # pause
+screenstudio record resume                                    # resume
+screenstudio record stop                                      # stop, save, verify, return the path
+screenstudio record stop --no-verify                          # skip the disk check
+screenstudio record cancel                                    # stop and discard
 ```
 
 `record displays` shows what apps are on each display, so you always record the right one. `--app` auto-detects which display contains the target app. Window mode uses AppleScript to match by window title.
 
-### Timeline (Slices)
+Recordings are found by scanning `~/*Screen Studio Projects*`. If you save elsewhere, set `SCREENSTUDIO_PROJECTS_DIR`.
+
+### Timeline (slices)
 
 ```bash
 screenstudio slice list                              # show all slices
@@ -106,15 +140,15 @@ screenstudio slice trim 0 --start 2000 --end 10000   # adjust boundaries directl
 
 ```bash
 screenstudio zoom list                                       # show all zoom ranges
-screenstudio zoom add 0 --level 2 --end 50000 --id my_zoom  # add with custom ID
-screenstudio zoom add 0 --level 2 --x 0.3 --y 0.8           # with target point
+screenstudio zoom add 0 --level 2 --end 50000 --id my_zoom   # add with custom ID
+screenstudio zoom add 0 --level 2 --x 0.3 --y 0.8            # with target point
 screenstudio zoom remove <id>                                # remove by ID
-screenstudio zoom update <id> --level 3 --x 0.5 --y 0.5     # update properties
+screenstudio zoom update <id> --level 3 --x 0.5 --y 0.5      # update properties
 screenstudio zoom split <id> 25000                           # split at timestamp
 screenstudio zoom set '[{...}, {...}]'                       # replace all at once
 ```
 
-Zoom operations use `scene.update({ zoomRanges })` internally, which is reliable — unlike Screen Studio's built-in `addZoomRangeAt()` which can overwrite adjacent ranges.
+Zoom operations use `scene.update({ zoomRanges })` internally, which is reliable — unlike Screen Studio's built-in `addZoomRangeAt()`, which can overwrite adjacent ranges.
 
 ### Masks
 
@@ -131,18 +165,20 @@ screenstudio mask clear
 ```bash
 screenstudio config --list                            # all 68 config keys
 screenstudio config backgroundColor                   # read a value
-screenstudio config backgroundColor "#FF0000"          # write (updates UI immediately)
+screenstudio config backgroundColor "#FF0000"         # write (updates the UI immediately)
 ```
 
-### Preview & Verification
+### Preview and verification
 
 ```bash
-screenstudio preview                         # screenshot the preview canvas
-screenstudio preview --at 5000 --open        # seek to 5s, capture, open in Preview.app
-screenstudio seek 10000                      # move playhead
-screenstudio render --fps 10 --from 3000 --to 6000   # render zoomed frames via ffmpeg
-screenstudio analyze --interval 2            # extract frames + event timeline
+screenstudio preview                                  # screenshot the preview canvas
+screenstudio preview --at 5000 --open                 # seek to 5s, capture, open it
+screenstudio seek 10000                               # move the playhead
+screenstudio render --fps 10 --from 3000 --to 6000    # render zoomed frames via ffmpeg
+screenstudio analyze --interval 2                     # extract frames + event timeline
 ```
+
+An agent cannot watch a video. These commands are how it checks its own work — render the range you just edited, look at the frames, confirm the change landed.
 
 ### Project
 
@@ -156,11 +192,11 @@ screenstudio project redo
 ### Export
 
 ```bash
-screenstudio export                  # opens export dialog (Cmd+Shift+E)
+screenstudio export                  # opens the export dialog (Cmd+Shift+E)
 screenstudio export --clipboard      # quick export to clipboard
 ```
 
-### Raw Execution
+### Raw execution
 
 ```bash
 screenstudio exec '$project.name'
@@ -168,72 +204,73 @@ screenstudio exec --file script.js
 echo '$projects.size' | screenstudio exec -
 ```
 
-## Global Flags
+### App lifecycle
 
-All commands support:
-- `--json` — structured JSON output (put before the command: `screenstudio --json state`)
-- `--port <n>` — CDP port (default 9222)
+```bash
+screenstudio launch              # start with the debug port open
+screenstudio launch --port 9333  # custom port
+screenstudio status              # is it connected, and what is open?
+screenstudio quit                # quit and confirm the port is closed
+screenstudio quit --force        # escalate if it will not go quietly
+```
 
-## Key Internals
+## Global flags
 
-**`$project` vs `$projects`**: The CLI uses `window.$project` (the active/focused project), not `Array.from($projects.values())[0]`. This ensures the correct project is targeted when multiple are open.
+- `--json` — structured JSON output. Put it before the command: `screenstudio --json state`
+- `--port <n>` — CDP port, default 9222
 
-**Undo support**: Every mutation calls `p.history.update()` before making changes, so `screenstudio project undo` reliably reverses any CLI edit.
+## Key internals
 
-**Speed**: Screen Studio uses `timeScale` internally where `timeScale = 1/speed`. So 4x speed = `timeScale: 0.25`. The `slice speed` command handles this conversion — just pass the speed you want.
+**`$project` vs `$projects`** — the CLI uses `window.$project`, the active project, not the first entry of `$projects`. That way the right project is targeted when several are open.
 
-**Zoom operations**: All zoom add/remove/split/update operations serialize the full zoom array and call `scene.update({ zoomRanges })`. This avoids `addZoomRangeAt()` which can overwrite adjacent ranges and cause ID collisions.
+**Finding the record buttons** — recording is triggered by walking React's fiber tree for components labelled "Record display", "Record window" and "Record area", then calling their `onClick`. Confirmed present on 3.7.3-4475. More durable than CSS selectors, which are generated fresh on every app build.
 
-**Video file naming**: Recording video files can be `channel-1-display-0.mp4` or `channel-2-display-0.mp4`. The CLI dynamically finds the correct file by globbing `channel-*-display-*.mp4`.
+**Knowing when capture starts** — the recording picker spawns extra CDP pages. `--wait` polls until the page count stabilises, then waits a measured settle. It waits for *stability* rather than a specific count, so it survives a different number of displays.
 
-## AI Agent Skill
+**Undo** — every mutation calls `p.history.update()` first, so `screenstudio project undo` reverses any CLI edit.
 
-The `skills/screenstudio-cli/` directory contains a SKILL.md that AI agents (Claude Code, Codex, etc.) can load to learn how to use the CLI. It includes:
+**Speed** — Screen Studio stores `timeScale = 1/speed` internally, so 4x is `timeScale: 0.25`. `slice speed` converts for you; pass the speed you want.
 
-- Full command reference
-- The "Watch → Edit → Watch" methodology
-- Coordinate system documentation
-- Crash prevention rules
+**Video file naming** — recordings can be `channel-1-display-0.mp4` or `channel-2-display-0.mp4`. The CLI globs `channel-*-display-*.mp4` to find the right one.
 
-The `skills/screenstudio-cli/references/demo.md` guide covers end-to-end demo recording and editing with a terminal + browser side-by-side layout, including the 2x zoom grid system for framing content.
+## Agent skill
 
-## License
+`skills/screenstudio-cli/SKILL.md` is a skill file for Claude Code and similar agents. Copy the folder into `~/.claude/skills/` and the agent learns the command set, the mandatory `quit`, and the "watch, edit, watch again" method — render the frames before you change something and again after, because the agent cannot see the video.
 
-MIT
+`references/demo.md` covers recording a terminal and browser side by side, including the zoom grid for framing.
 
 ---
 
-## Sam's fork (branch `sam-fork`)
+## How this was built
 
-Forked 2026-07-24 from upstream `f34aacc`. Verified against Screen Studio
-3.7.3-4475 on macOS 26.5.1. Installed via symlink at `~/.local/bin/screenstudio`
-— NOT from npm. Edit `src/`, run `npx tsc`, done.
+This fork is also a record of how I work with an agent. The audit, the fork, the fixes and the tests were one session with Claude Code. What made it work was not asking for code. It was refusing to accept claims.
 
-Upstream's recording commands fire their tRPC mutation and print success
-unconditionally, so a failed stop still reported "Recording stopped and saved".
-Changes here:
+**Check the supply chain before you install, not after.** Reading a GitHub repo tells you nothing about what npm actually ships — they are two separate artifacts. So clone the source, build it, and diff the result against the published package.
 
-- **`quit`** (new) — quits Screen Studio and confirms the debug port is closed.
-  Upstream can only open the port, never close it. Exits non-zero if it is still
-  open. `--force` escalates to `pkill`.
-- **`record stop`** — awaits the mutation, then waits for the `.screenstudio`
-  bundle to appear on disk and stop growing. Returns the real `project` path and
-  `capturedSeconds`; exits non-zero if nothing saved. `--no-verify` opts out.
-- **`record start --wait`** — returns only once capture is actually rolling.
-  Upstream returns ~4s early, so `sleep 10` between start and stop captured only
-  ~6s. With `--wait`, a 10s ask captures 9.97s.
-- **`record pause` / `resume` / `cancel`** — surface real errors.
-- **`CDPClient.evaluateAwait()`** — evaluates with CDP `awaitPromise`, so bridge
-  rejections propagate instead of being swallowed.
-- **Shell quoting** (`src/util/shell.ts`) — every interpolated path passed to
-  ffmpeg/ffprobe/open is single-quoted. Upstream used double quotes, which still
-  let `$(...)` execute.
+```
+npm ci --ignore-scripts && npx tsc
+diff -rq rebuilt/dist  published/dist
+→ identical
+```
 
-### Security
+Ninety seconds, and the question is settled instead of assumed.
 
-The debug port is bound to localhost and Screen Studio's renderer has Node
-integration disabled (verified: `require`, `process`, `module` are all
-undefined), so reaching the port is not a shell. But the `electronTRPC` preload
-bridge to the privileged main process is reachable, which means any local
-process can drive the app — including starting a recording — for as long as the
-port is open. Always finish with `screenstudio quit`.
+**Test the security boundary, do not reason about it.** "It opens a debug port" could mean anything from harmless to full remote code execution. The answer came from launching the app and reading its internals: port bound to localhost, Node integration off, IPC bridge live. That is a specific finding you can act on, not a vague worry.
+
+**Measure, do not estimate.** The first recording came out short. Rather than guessing at a delay, we timed it — 13 seconds of wall clock produced 8.83 seconds of footage, 6 seconds produced 1.39. A consistent 4.2 seconds of lead-in, which then had a real fix instead of a magic number.
+
+**Distrust the first answer, including your own.** The agent told me recording would probably be broken on this version, and gave a reason. Both the reason and the mechanism were wrong; the code never referenced the thing it claimed was missing. Testing took two minutes and corrected the record. An agent that cannot say "I was wrong about that" is worse than no agent.
+
+**Verify by outcome.** Every fix here comes back to the same idea. Do not ask the system whether it succeeded. Look at what it was supposed to produce, and check whether it is there.
+
+---
+
+## Credit
+
+Built on [ShawnPana/screenstudio-cli](https://github.com/ShawnPana/screenstudio-cli) by Shawn Pana — the CDP approach, the command surface and the editing model are his work. MIT licensed, and this fork stays MIT.
+
+Screen Studio is a commercial app by Adam Pietrasiak. This project is not affiliated with it or endorsed by it, and it drives the app through an unsupported debugging interface that may break on any update.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

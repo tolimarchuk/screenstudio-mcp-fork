@@ -1,6 +1,60 @@
-# screenstudio-cli
+---
+name: screenstudio-cli
+description: Record and edit screen recordings with Screen Studio from the command line - start/stop recordings of a display, window or area, then cut, zoom, mask, and export. Use when asked to record the screen, capture a demo or product walkthrough, edit a .screenstudio project, or produce screen-recording footage for a video.
+---
 
-Control Screen Studio from the command line via Chrome DevTools Protocol. No plugins, no extensions — direct WebSocket connection to the Electron app's MobX state.
+# screenstudio-agent
+
+Control Screen Studio from the command line. Verified against Screen Studio
+3.7.3-4475.
+
+## Security — always close the port
+
+The tool works by launching Screen Studio with `--remote-debugging-port=9222`.
+While that port is open, ANY local process can drive Screen Studio, including
+starting a recording. The port binds to localhost only, and Screen Studio's
+window has Node access disabled so it is not a shell — but do not leave it open.
+
+**Always finish with `screenstudio quit`.** Treat it as mandatory:
+
+```bash
+screenstudio launch
+# ... do the work ...
+screenstudio quit          # closes the app AND verifies the port is shut
+screenstudio quit --force  # if the app ignores the polite request
+```
+
+`quit` exits non-zero if the port is still open, so a script can rely on it.
+
+## Verification behaviour (differs from upstream screenstudio-cli)
+
+Upstream fires its recording commands and prints success unconditionally, so a
+failed stop still reported "Recording stopped and saved". This version verifies:
+
+- **`record stop`** awaits the app's real reply, then waits for the saved
+  `.screenstudio` bundle to appear on disk and stop growing. It returns the
+  actual `project` path and `capturedSeconds`, and exits non-zero if nothing was
+  saved. Pass `--no-verify` to skip the disk check.
+- **`record start --wait`** returns only once capture is actually rolling.
+  Without it, `start` returns about 4 seconds before the first frame, so a
+  `sleep 10` between start and stop yields only ~6s of footage. With `--wait`,
+  asking for 10s gives 9.97s. Always use `--wait` when timing matters.
+- **`record pause` / `resume` / `cancel`** report real failures.
+
+Recordings are located by scanning `~/*Screen Studio Projects*`. Set
+`SCREENSTUDIO_PROJECTS_DIR` if projects are saved elsewhere.
+
+## Recording recipe
+
+```bash
+screenstudio launch
+screenstudio record displays                      # see what is available
+screenstudio record start --display 0 --wait      # or --mode window --title "Chrome"
+sleep 30                                          # actual capture time
+screenstudio record stop                          # returns the project path
+screenstudio quit
+```
+
 
 ## Setup
 

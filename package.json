@@ -1,8 +1,9 @@
 {
-  "name": "screenstudio-cli",
-  "version": "0.1.0",
-  "description": "CLI tool to control Screen Studio via Chrome DevTools Protocol",
+  "name": "screenstudio-agent",
+  "version": "0.2.0",
+  "description": "Drive Screen Studio from the command line so an AI agent can record and edit your screen — a verification-first fork of screenstudio-cli",
   "type": "module",
+  "private": true,
   "bin": {
     "screenstudio": "./bin/screenstudio.js"
   },
@@ -10,16 +11,16 @@
     "bin/",
     "dist/",
     "skills/",
-    "README.md"
+    "README.md",
+    "README.zh-TW.md"
   ],
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch",
-    "prepublishOnly": "npm run build"
+    "dev": "tsc --watch"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/ShawnPana/screenstudio-cli.git"
+    "url": "https://github.com/HyperfocuSam/screenstudio-agent.git"
   },
   "keywords": [
     "screen-studio",
@@ -29,9 +30,14 @@
     "screen-recording",
     "cdp",
     "chrome-devtools-protocol",
-    "automation"
+    "automation",
+    "ai-agent",
+    "claude-code"
   ],
-  "author": "Shawn Pana",
+  "author": "Sam Wong",
+  "contributors": [
+    "Shawn Pana (original screenstudio-cli)"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=21.0.0"

@@ -97,9 +97,21 @@ interface WindowInfo {
   y: number;
 }
 
-function getWindowList(): WindowInfo[] {
-  try {
-    const script = `
+/**
+ * Enumerate every on-screen window via System Events.
+ *
+ * This is slow — it walks every visible process and every window of each one.
+ * Measured at 5.9s on a machine with ~12 apps open, against the 5s timeout this
+ * originally shipped with. It therefore timed out, and the old `catch` returned
+ * an empty array, so `record windows` reported "No visible windows found" while
+ * `record displays` (which reads Screen Studio's own picker over CDP, not
+ * AppleScript) listed those very same windows.
+ *
+ * Two fixes: a realistic timeout, and never conflating failure with emptiness.
+ * A genuine "no windows" answer and a broken lookup must not look alike.
+ */
+function getWindowList(timeoutMs = 20_000): WindowInfo[] {
+  const script = `
       set output to ""
       tell application "System Events"
         repeat with proc in (every process whose visible is true)
@@ -118,29 +130,51 @@ function getWindowList(): WindowInfo[] {
       end tell
       return output
     `;
-    const raw = execSync(`osascript -e ${shq(script)}`, {
-      encoding: "utf-8",
-      timeout: 5000,
-    }).trim();
 
-    return raw
-      .split("\n")
-      .filter((line) => line.includes("|||"))
-      .map((line) => {
-        const parts = line.split("|||");
-        return {
-          app: parts[0],
-          title: parts[1],
-          width: parseInt(parts[2]),
-          height: parseInt(parts[3]),
-          x: parseInt(parts[4]),
-          y: parseInt(parts[5]),
-        };
-      })
-      .filter((w) => w.app !== "Screen Studio");
-  } catch {
-    return [];
+  let raw: string;
+  try {
+    raw = execSync(`osascript -e ${shq(script)}`, {
+      encoding: "utf-8",
+      timeout: timeoutMs,
+      maxBuffer: 8 * 1024 * 1024,
+    }).trim();
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException & {
+      stderr?: Buffer | string;
+      signal?: string;
+    };
+    if (e.code === "ETIMEDOUT" || e.signal === "SIGTERM") {
+      throw new Error(
+        `Window enumeration timed out after ${timeoutMs}ms. macOS System Events is slow when many apps are open — retry with --window-timeout <ms>.`,
+      );
+    }
+    const stderr = e.stderr ? e.stderr.toString().trim() : "";
+    if (/not allowed assistive|1002|osascript is not allowed/i.test(stderr)) {
+      throw new Error(
+        "Window enumeration needs Accessibility permission. Grant it to your terminal in System Settings > Privacy & Security > Accessibility.",
+      );
+    }
+    throw new Error(`Window enumeration failed: ${stderr || e.message}`);
   }
+
+  return raw
+    .split("\n")
+    .filter((line) => line.includes("|||"))
+    .map((line) => {
+      const parts = line.split("|||");
+      return {
+        app: parts[0],
+        title: parts[1],
+        width: parseInt(parts[2]),
+        height: parseInt(parts[3]),
+        x: parseInt(parts[4]),
+        y: parseInt(parts[5]),
+      };
+    })
+    .filter((w) => w.app !== "Screen Studio")
+    // Untitled zero-size shells (menu-bar extras, off-screen helpers) are not
+    // recordable targets and only add noise to the picker list.
+    .filter((w) => w.title.trim() !== "" && w.width > 0 && w.height > 0);
 }
 
 interface DisplayBounds {
@@ -531,6 +565,11 @@ const recordStart = new Command("start")
   .option("--title <search>", "Window title to search for (window mode)")
   .option("--app <name>", "Auto-detect display containing this app (display mode)")
   .option("--delay <ms>", "Delay before auto-selecting (ms)", "1500")
+  .option(
+    "--window-timeout <ms>",
+    "How long to allow for macOS window enumeration",
+    "20000",
+  )
   .option("--wait", "Return only once capture is actually rolling (past the countdown)")
   .option("--countdown <ms>", "Extra settle after the picker closes, used with --wait", "1600")
   .action(async (opts, cmd) => {
@@ -543,7 +582,15 @@ const recordStart = new Command("start")
     const appSearch = opts.app as string | undefined;
 
     // Get window list before triggering picker (for title/app matching)
-    const windowList = (mode === "window" || appSearch) ? getWindowList() : [];
+    let windowList: WindowInfo[] = [];
+    if (mode === "window" || appSearch) {
+      try {
+        windowList = getWindowList(parseInt(opts.windowTimeout));
+      } catch (err) {
+        output({ error: (err as Error).message }, json);
+        process.exit(1);
+      }
+    }
 
     // If --app is specified in display mode, find which display contains that app
     if (mode === "display" && appSearch && opts.display === undefined) {
@@ -1102,16 +1149,29 @@ const recordResume = new Command("resume")
 
 const recordWindows = new Command("windows")
   .description("List available windows for recording (with titles)")
-  .action(async (_opts, cmd) => {
+  .option(
+    "--window-timeout <ms>",
+    "How long to allow for macOS window enumeration",
+    "20000",
+  )
+  .action(async (opts, cmd) => {
     const json = cmd.parent?.parent?.opts().json || false;
 
-    const windows = getWindowList();
+    let windows: WindowInfo[];
+    try {
+      windows = getWindowList(parseInt(opts.windowTimeout));
+    } catch (err) {
+      output({ error: (err as Error).message }, json);
+      process.exit(1);
+    }
 
     if (json) {
       output(windows, true);
     } else {
       if (windows.length === 0) {
-        console.log("No visible windows found.");
+        console.log(
+          "No windows found. Every visible app reported zero recordable windows — if that looks wrong, retry with --window-timeout 40000.",
+        );
       } else {
         const rows = windows.map((w) => [
           w.app,

@@ -1,228 +1,161 @@
-import { findRendererPage } from "./page-finder.js";
+import { findRendererPage, assertLocalSocket } from "./page-finder.js";
 
-interface CDPMessage {
-  id: number;
-  result?: {
-    result?: {
-      type: string;
-      value?: unknown;
-      description?: string;
-      objectId?: string;
-    };
-    exceptionDetails?: {
-      text: string;
-      exception?: { description?: string };
-    };
-  };
-}
-
+type Pending = {
+  resolve: (value: any) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+};
 export class CDPClient {
   private ws: WebSocket | null = null;
   private messageId = 0;
-  private port: number;
-
-  constructor(port = 9222) {
-    this.port = port;
+  private pending = new Map<number, Pending>();
+  private readonly timeoutMs: number;
+  constructor(
+    private readonly port = 9222,
+    options: { timeoutMs?: number } = {},
+  ) {
+    this.timeoutMs = options.timeoutMs ?? 30_000;
   }
-
   async connect(): Promise<void> {
-    const wsUrl = await findRendererPage(this.port);
-    this.ws = new WebSocket(wsUrl);
-
+    await this.connectTo(await findRendererPage(this.port));
+  }
+  async connectTo(url: string): Promise<void> {
+    assertLocalSocket(url, this.port);
+    const ws = new WebSocket(url);
+    this.ws = ws;
+    ws.addEventListener("message", (event) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(String(event.data));
+      } catch {
+        return;
+      }
+      const pending = this.pending.get(msg.id);
+      if (!pending) return;
+      this.pending.delete(msg.id);
+      clearTimeout(pending.timer);
+      if (msg.error) pending.reject(new Error(`CDP: ${msg.error.message}`));
+      else pending.resolve(msg.result);
+    });
+    ws.addEventListener("close", () =>
+      this.failPending(
+        new Error(
+          "Screen Studio connection closed. Reconnect and inspect state before retrying a change.",
+        ),
+      ),
+    );
+    ws.addEventListener("error", () =>
+      this.failPending(new Error("Screen Studio connection failed.")),
+    );
     await new Promise<void>((resolve, reject) => {
-      this.ws!.onopen = () => resolve();
-      this.ws!.onerror = () =>
-        reject(new Error("Failed to connect to Screen Studio via WebSocket."));
-    });
-  }
-
-  async evaluate<T = unknown>(expression: string): Promise<T> {
-    if (!this.ws) throw new Error("Not connected. Call connect() first.");
-
-    const id = ++this.messageId;
-
-    // Wrap in try/catch so errors propagate as values, not CDP exceptions
-    const wrapped = `
-      try { JSON.stringify((function() { ${expression} })()); }
-      catch(__e) { JSON.stringify({ __error: true, message: __e.message, stack: __e.stack ? __e.stack.slice(0, 500) : '' }); }
-    `;
-
-    const ws = this.ws;
-
-    return new Promise<T>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error("CDP evaluation timed out after 30 seconds."));
-      }, 30_000);
-
-      const handler = (event: MessageEvent) => {
-        const msg: CDPMessage = JSON.parse(
-          typeof event.data === "string" ? event.data : event.data.toString(),
-        );
-        if (msg.id !== id) return;
-
-        clearTimeout(timeout);
-        ws.removeEventListener("message", handler);
-
-        if (msg.result?.exceptionDetails) {
-          const desc =
-            msg.result.exceptionDetails.exception?.description ||
-            msg.result.exceptionDetails.text;
-          reject(new Error(`Screen Studio error: ${desc}`));
-          return;
-        }
-
-        const raw = msg.result?.result?.value;
-        if (raw === undefined || raw === null) {
-          resolve(undefined as T);
-          return;
-        }
-
-        try {
-          const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-          if (parsed && parsed.__error) {
-            reject(new Error(parsed.message));
-            return;
-          }
-          resolve(parsed as T);
-        } catch {
-          resolve(raw as T);
-        }
-      };
-
-      ws.addEventListener("message", handler);
-      ws.send(
-        JSON.stringify({
-          id,
-          method: "Runtime.evaluate",
-          params: { expression: wrapped, returnByValue: true },
-        }),
+      const timer = setTimeout(() => {
+        ws.close();
+        reject(new Error("Screen Studio connection timed out."));
+      }, this.timeoutMs);
+      ws.addEventListener(
+        "open",
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+      ws.addEventListener(
+        "error",
+        () => {
+          clearTimeout(timer);
+          reject(new Error("Failed to connect to Screen Studio."));
+        },
+        { once: true },
+      );
+      ws.addEventListener(
+        "close",
+        () => {
+          clearTimeout(timer);
+          reject(new Error("Screen Studio connection closed."));
+        },
+        { once: true },
       );
     });
   }
-
-  /**
-   * Evaluate an expression that returns a Promise, and wait for it to settle.
-   *
-   * Screen Studio's tRPC bridge (`bridge.client.mutation(...)`) is async. The
-   * plain `evaluate()` above wraps the expression in a synchronous IIFE, so a
-   * promise result is discarded and the caller cannot tell success from
-   * failure. This uses CDP's `awaitPromise` so rejections surface as errors
-   * instead of being silently swallowed.
-   */
-  async evaluateAwait<T = unknown>(expression: string): Promise<T> {
-    if (!this.ws) throw new Error("Not connected. Call connect() first.");
-
-    const id = ++this.messageId;
+  async send<T = any>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = this.timeoutMs,
+  ): Promise<T> {
     const ws = this.ws;
-
+    if (!ws || ws.readyState !== WebSocket.OPEN)
+      throw new Error("Screen Studio is not connected.");
+    const id = ++this.messageId;
     return new Promise<T>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error("CDP evaluation timed out after 30 seconds."));
-      }, 30_000);
-
-      const handler = (event: MessageEvent) => {
-        const msg = JSON.parse(
-          typeof event.data === "string" ? event.data : event.data.toString(),
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(
+          new Error(
+            `${method} timed out after ${timeoutMs}ms. The operation may have completed; inspect state before retrying.`,
+          ),
         );
-        if (msg.id !== id) return;
-
-        clearTimeout(timeout);
-        ws.removeEventListener("message", handler);
-
-        if (msg.result?.exceptionDetails) {
-          const d = msg.result.exceptionDetails;
-          const desc =
-            d.exception?.description || d.exception?.value?.message || d.text;
-          reject(new Error(`Screen Studio rejected the call: ${desc}`));
-          return;
-        }
-
-        resolve(msg.result?.result?.value as T);
-      };
-
-      ws.addEventListener("message", handler);
-      ws.send(
-        JSON.stringify({
-          id,
-          method: "Runtime.evaluate",
-          params: {
-            expression,
-            returnByValue: true,
-            awaitPromise: true,
-          },
-        }),
-      );
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        ws.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
-
+  async evaluate<T = unknown>(body: string): Promise<T> {
+    return this.evaluateAwait<T>(`(async function(){ ${body} })()`);
+  }
+  async evaluateAwait<T = unknown>(
+    expression: string,
+    timeoutMs = this.timeoutMs,
+  ): Promise<T> {
+    const result = await this.send<any>(
+      "Runtime.evaluate",
+      {
+        expression: `(async()=>{const value=await (${expression});return JSON.stringify(value===undefined?null:value);})()`,
+        returnByValue: true,
+        awaitPromise: true,
+      },
+      timeoutMs,
+    );
+    if (result.exceptionDetails)
+      throw new Error(
+        result.exceptionDetails.exception?.description ??
+          result.exceptionDetails.text ??
+          "Screen Studio evaluation failed.",
+      );
+    const value = result.result?.value;
+    return (typeof value === "string" ? JSON.parse(value) : value) as T;
+  }
   async evaluateRaw(expression: string): Promise<string> {
-    if (!this.ws) throw new Error("Not connected. Call connect() first.");
-
-    const id = ++this.messageId;
-    const ws = this.ws;
-
-    return new Promise<string>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error("CDP evaluation timed out after 30 seconds."));
-      }, 30_000);
-
-      const handler = (event: MessageEvent) => {
-        const msg: CDPMessage = JSON.parse(
-          typeof event.data === "string" ? event.data : event.data.toString(),
-        );
-        if (msg.id !== id) return;
-
-        clearTimeout(timeout);
-        ws.removeEventListener("message", handler);
-
-        const value = msg.result?.result?.value;
-        resolve(value !== undefined ? String(value) : "undefined");
-      };
-
-      ws.addEventListener("message", handler);
-      ws.send(
-        JSON.stringify({
-          id,
-          method: "Runtime.evaluate",
-          params: { expression, returnByValue: true },
-        }),
-      );
-    });
+    const value = await this.evaluateAwait(expression);
+    return typeof value === "string" ? value : JSON.stringify(value);
   }
-
   async dispatchKeyEvent(
     key: string,
     code: string,
     modifiers: number,
   ): Promise<void> {
-    if (!this.ws) throw new Error("Not connected.");
-
-    const id = ++this.messageId;
-    const ws = this.ws;
-
-    for (const type of ["keyDown", "keyUp"]) {
-      const sendId = type === "keyDown" ? id : ++this.messageId;
-      ws.send(
-        JSON.stringify({
-          id: sendId,
-          method: "Input.dispatchKeyEvent",
-          params: { type, key, code, modifiers },
-        }),
-      );
-    }
-
-    // Brief wait for the keypress to register
-    await new Promise((r) => setTimeout(r, 100));
+    for (const type of ["keyDown", "keyUp"])
+      await this.send("Input.dispatchKeyEvent", { type, key, code, modifiers });
   }
-
   disconnect(): void {
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    this.failPending(new Error("Screen Studio disconnected."));
+    this.ws?.close();
+    this.ws = null;
+  }
+  private failPending(error: Error): void {
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(error);
     }
+    this.pending.clear();
   }
 }
-
 export async function withClient<T>(
   port: number,
   fn: (client: CDPClient) => Promise<T>,

@@ -4,6 +4,10 @@ An unofficial local MCP server for Screen Studio 4. An agent can record an app, 
 
 Forked from [screenstudio-agent](https://github.com/HyperfocuSam/screenstudio-agent), originally based on [screenstudio-cli](https://github.com/ShawnPana/screenstudio-cli). MIT licensed. Not affiliated with Screen Studio.
 
+[Watch the actual agent recording](examples/demo.mp4).
+
+![Rendered agent walkthrough](examples/demo.png)
+
 ## Compatibility
 
 **Tested with Screen Studio 4.0.1-4897 on Apple Silicon macOS.** Mutating app operations require that build. Version 4 changed both project settings and timeline structure; this adapter uses its nested configuration and scene data. Screen Studio has no supported public automation API, so an app update may require adapter changes.

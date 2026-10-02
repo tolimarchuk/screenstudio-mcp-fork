@@ -1,26 +1,36 @@
 {
-  "name": "screenstudio-agent",
-  "version": "0.2.0",
-  "description": "Drive Screen Studio from the command line so an AI agent can record and edit your screen — a verification-first fork of screenstudio-cli",
+  "name": "screenstudio-mcp",
+  "version": "0.3.0",
+  "description": "Unofficial Screen Studio 4 MCP with native desktop interaction and agent skills",
   "type": "module",
   "private": true,
   "bin": {
-    "screenstudio": "./bin/screenstudio.js"
+    "screenstudio-mcp": "./dist/mcp/main.js"
   },
   "files": [
-    "bin/",
-    "dist/",
+    "dist/cdp/",
+    "dist/mcp/",
+    "dist/studio/",
+    "native/Desktop.swift",
+    "native/desktop-helper",
     "skills/",
+    "docs/",
     "README.md",
-    "README.zh-TW.md"
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "build:native": "swiftc native/Desktop.swift -o native/desktop-helper -framework Cocoa -framework ApplicationServices",
+    "test:live": "npm run build && node scripts/live-smoke.mjs",
+    "check": "npm test && npm run build:native",
+    "format:check": "prettier --check src/cdp src/studio src/mcp test scripts/*.mjs",
+    "build:demo": "node scripts/build-demo.mjs"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/HyperfocuSam/screenstudio-agent.git"
+    "url": "https://github.com/tolimarchuk/screenstudio-mcp.git"
   },
   "keywords": [
     "screen-studio",
@@ -40,13 +50,18 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=21.0.0"
+    "node": ">=22"
   },
   "dependencies": {
-    "commander": "^13.1.0"
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "commander": "^13.1.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.7.0"
+    "@types/ws": "^8.18.2",
+    "prettier": "^3.9.9",
+    "typescript": "^5.7.0",
+    "ws": "^8.22.0"
   }
 }

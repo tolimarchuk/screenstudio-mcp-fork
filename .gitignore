@@ -2,3 +2,11 @@ node_modules/
 dist/
 .agents/
 .claude/
+.artifacts/
+*.screenstudio/
+*.mp4
+*.mov
+*.gif
+.DS_Store
+
+native/desktop-helper
